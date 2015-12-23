@@ -30,6 +30,11 @@ class NodeScalaSuite extends FunSuite {
       case t: TimeoutException => // ok!
     }
   }
+  test("All futures should be completed") {
+    val allFts = Future.all(List(Future{1}, Future{2}, Future{3}))
+    
+    assert(Await.result(allFts, 1 millisecond) == List(1,2,3))
+  }
 
   
   
