@@ -16,6 +16,7 @@ import rx.lang.scala.Observable
 import rx.lang.scala.Subscription
 import observablex._
 import search._
+import scala.concurrent.duration._
 
 object WikipediaSuggest extends SimpleSwingApplication with ConcreteSwingApi with ConcreteWikipediaApi {
 
@@ -81,27 +82,40 @@ object WikipediaSuggest extends SimpleSwingApplication with ConcreteSwingApi wit
      */
 
     // TO IMPLEMENT
-    val searchTerms: Observable[String] = ???
+    val searchTerms: Observable[String] = searchTermField.textValues
 
     // TO IMPLEMENT
-    val suggestions: Observable[Try[List[String]]] = ???
+    val suggestions: Observable[Try[List[String]]] = searchTerms.sanitized.concatRecovered { 
+      term => wikiSuggestResponseStream(term) 
+    }
 
     // TO IMPLEMENT
     val suggestionSubscription: Subscription =  suggestions.observeOn(eventScheduler) subscribe {
-      x => ???
+      x => x match {
+        case Success(strings) => suggestionList.listData = strings
+        case Failure(error)   => status.text = error.getMessage
+      }
     }
 
     // TO IMPLEMENT
-    val selections: Observable[String] = ???
+    val selections: Observable[String] = 
+      button.clicks
+            .filter { _ => !suggestionList.selection.items.isEmpty }
+            .map { _ => suggestionList.selection.items.head }
 
     // TO IMPLEMENT
-    val pages: Observable[Try[String]] = ???
+    val pages: Observable[Try[String]] = selections concatRecovered { 
+      selectedTerm => wikiPageResponseStream(selectedTerm)
+    }
 
     // TO IMPLEMENT
     val pageSubscription: Subscription = pages.observeOn(eventScheduler) subscribe {
-      x => ???
+      x => x match {
+        case Success(str) => editorpane.text = str
+        case Failure(error) => status.text = error.getMessage
+      }
     }
-
+  
   }
 
 }

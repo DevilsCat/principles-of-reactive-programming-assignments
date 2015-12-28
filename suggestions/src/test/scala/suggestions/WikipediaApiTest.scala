@@ -66,5 +66,26 @@ class WikipediaApiTest extends FunSuite {
     }
     assert(total == (1 + 1 + 2 + 1 + 2 + 3), s"Sum: $total")
   }
-
+  
+  test("WikipediaApi should correctly ignore the exception") {
+    val events = Observable.just(1,2,0,3,4)
+    val bugs = events.map { x => 12 / x }
+    val recovered = bugs.recovered
+    var counter = 0
+    try {
+      recovered.subscribe { x => counter += 1 }  
+    } catch {
+      case e: ArithmeticException => assert(false)
+    }
+    assert(counter == 3)
+  }
+  
+  test("WikipediaApi should correctly time out") {
+    val emptyObs = Observable.just(42).delay(Duration(1100, MILLISECONDS))
+    val listA = emptyObs.timedOut(1).toBlocking.toList
+    assert(listA.isEmpty)
+    val oneElemObs = Observable.just(42).delay(Duration(900, MILLISECONDS))
+    val listB = oneElemObs.timedOut(1).toBlocking.toList
+    assert(listB == List(42))
+  }
 }
