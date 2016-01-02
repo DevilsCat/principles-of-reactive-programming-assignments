@@ -82,6 +82,30 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
 
     verify(requester, ops, expectedReplies)
   }
+  
+  test("proper inserts, remove, gc once") {
+    val topNode = system.actorOf(Props[BinaryTreeSet])
+    
+    topNode ! Insert(testActor, id = 2, 1)
+    expectMsg(OperationFinished(2))
+    topNode ! Insert(testActor, id = 3, 2)
+    expectMsg(OperationFinished(3))
+    topNode ! Contains(testActor, id = 4, 1)
+    expectMsg(ContainsResult(4, true))
+    topNode ! Contains(testActor, id = 5, 2)
+    expectMsg(ContainsResult(5, true))
+    
+    topNode ! Remove(testActor, id = 6, 2)
+    expectMsg(OperationFinished(6))
+    topNode ! Contains(testActor, id = 7, 1)
+    expectMsg(ContainsResult(7, true))
+    topNode ! Contains(testActor, id = 8, 2)
+    expectMsg(ContainsResult(8, false))
+
+    topNode ! GC
+    topNode ! Contains(testActor, id = 9, 1)
+    expectMsg(ContainsResult(9, true))
+  }
 
   test("behave identically to built-in set (includes GC)") {
     val rnd = new Random()
@@ -126,4 +150,5 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     }
     receiveN(requester, ops, expectedReplies)
   }
+  
 }
