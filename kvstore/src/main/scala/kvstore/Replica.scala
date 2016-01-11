@@ -65,32 +65,38 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   }
 
   /* TODO Behavior for  the leader role. */
-  val leader: Receive = {
+  val leader: Receive = LoggingReceive {
     case Insert(key, value, id) =>
       kv += { key -> value }
-      //val (cancelTimeout, cancelTimer) = registerToSchedulerBeforeWait(() => persistent ! Persist(key, kv.get(key), id))
       val cancelTimer = scheduler.schedule(0.days, 100.milliseconds)(persistent ! Persist(key, kv.get(key), id))
       val cancelTimeout = scheduler.scheduleOnce(1.seconds, self, Timeout)
-      context.become(waitPrimaryPersistDone(sender, key, id, cancelTimeout, cancelTimer))
+      context.become(waitAllDone(sender, replicators.zipWithIndex, key, id, cancelTimeout, cancelTimer))
     case Remove(key, id) =>
       kv -= key
       val cancelTimer = scheduler.schedule(0.days, 100.milliseconds)(persistent ! Persist(key, kv.get(key), id))
       val cancelTimeout = scheduler.scheduleOnce(1.seconds, self, Timeout)
-      context.become(waitPrimaryPersistDone(sender, key, id, cancelTimeout, cancelTimer))
+      context.become(waitAllDone(sender, replicators.zipWithIndex, key, id, cancelTimeout, cancelTimer))
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
     case Replicas(replicas) =>
-      // provide each replica a replicator and insert them to data structure.
-      replicas map {
+      val removedPair = secondaries.filter{case (replica, replicator) => !replicas.contains(replica) }
+      for ((replica, replicator) <- removedPair) {
+        replicator ! PoisonPill // stop replicator
+        replicators -= replicator  
+        secondaries -= replica
+      }
+      val addedReplicas = replicas.filter { case replica => !secondaries.contains(replica) && !replica.equals(self) }
+      addedReplicas map {
         case replica =>
-          if (!replica.equals(self)) {
-            val replicator = context.actorOf(Replicator.props(replica), s"r$replicatorId")
-            replicatorId += 1
-            replicators += replicator
-            secondaries += replica -> replicator
+          val replicator = context.actorOf(Replicator.props(replica), s"replicator$replicatorId")
+          replicatorId += 1
+          replicators += replicator
+          secondaries += replica -> replicator
+          for ((k, v) <- kv; (replicator, rid) <- replicators.zipWithIndex) {
+            replicator ! Replicate(k, Some(v), rid)
           }
       }
   }
-  def waitPrimaryPersistDone(requester: ActorRef, 
+  def waitAllDone(requester: ActorRef, replicators: Set[(ActorRef, Int)],
                              key: String, id: Long,
                              cancelTimeout: Cancellable, cancelTimer: Cancellable): Receive = {
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
@@ -101,38 +107,41 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         context.become(leader)
       } else {
         cancelTimer.cancel
-        context.become(waitReplicatesDone(
-            requester, replicators.zipWithIndex, 
+        context.become(waitAllDone(
+            requester, replicators, 
             key, id, 
             cancelTimeout,
-            scheduler.schedule(0.days, 100.milliseconds)(self ! Replicate(key, kv.get(key), id))
+            scheduler.schedule(0.day, 100.milliseconds)(for ((replicator, rid) <- replicators) replicator ! Replicate(key, kv.get(key), rid))
         ))
       }
+    case Replicated(key, rid) =>
+      val filtReplicators = replicators.filter{case (_, replicatorId) =>  replicatorId != rid}
+      if (filtReplicators.isEmpty) {
+        cancelTimeout.cancel
+        cancelTimer.cancel
+        requester ! OperationAck(id)
+        context.become(leader)
+      } else {
+        context.become(waitAllDone(requester, filtReplicators, key, id, cancelTimeout, cancelTimer))
+      }
+    case Replicas(replicas) =>
+     val removedPair = secondaries.filter{case (replica, replicator) => !replicas.contains(replica) }
+     for ((replica, replicator) <- removedPair) {
+       replicator ! PoisonPill // stop replicator
+       this.replicators -= replicator  // remove from global  
+       secondaries -= replica
+     }
+     val filtReplicators = replicators.filter{ case (replicator, _) => !removedPair.values.toSet.contains(replicator) }
+     if (filtReplicators.isEmpty) {
+       requester ! OperationAck(id)
+       context.become(leader)
+     } else {
+       context.become(waitAllDone(requester, filtReplicators, key, id, cancelTimeout, cancelTimer))
+     }
     case Timeout =>
       cancelTimeout.cancel
       cancelTimer.cancel
       requester ! OperationFailed(id)
-      context.become(leader)
-  }
-  
-  def waitReplicatesDone(requester: ActorRef, replicators: Set[(ActorRef, Int)], 
-                         key: String, requestId: Long, 
-                         cancelTimeout: Cancellable, cancelTimer: Cancellable): Receive = {
-   case Get(key, id) => sender ! GetResult(key, kv.get(key), id) 
-   case Replicate(key, optVal, id) => for ((replicator, rid) <- replicators) replicator ! Replicate(key, optVal, rid)
-   case Replicated(key, id) =>
-      val filtReplicators = replicators.filter{case (_, replicatorId) =>  replicatorId != id}
-      if (filtReplicators.isEmpty) {
-        cancelTimeout.cancel
-        cancelTimer.cancel
-        requester ! OperationAck(requestId)
-        context.become(leader)
-      } else {
-        context.become(waitReplicatesDone(requester, filtReplicators, key, requestId, cancelTimeout, cancelTimer))
-      }
-   case Timeout =>
-      cancelTimer.cancel
-      requester ! OperationFailed(requestId)
       context.become(leader)
   }
   
