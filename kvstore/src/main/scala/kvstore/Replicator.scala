@@ -4,6 +4,9 @@ import akka.actor.Props
 import akka.actor.Actor
 import akka.actor.ActorRef
 import scala.concurrent.duration._
+import akka.actor.Cancellable
+import akka.event.LoggingReceive
+
 
 object Replicator {
   case class Replicate(key: String, valueOption: Option[String], id: Long)
@@ -35,11 +38,21 @@ class Replicator(val replica: ActorRef) extends Actor {
     _seqCounter += 1
     ret
   }
-
   
   /* TODO Behavior for the Replicator. */
-  def receive: Receive = {
-    case _ =>
+  def receive: Receive = waiting
+  
+  val waiting: Receive = {
+    case Replicate(key, valOpt, id) =>
+      val seqNo = nextSeq
+      val scheduler = context.system.scheduler
+      val cancellable = scheduler.schedule(10.milliseconds, 100.milliseconds)(replica ! Snapshot(key, valOpt, seqNo))
+      context.become(waitSnapshotDone(cancellable, id))
   }
-
+  
+  def waitSnapshotDone(cancellable: Cancellable, id: Long): Receive = {
+    case SnapshotAck(key, seq) => cancellable.cancel
+                                  context.parent ! Replicated(key, id)
+                                  context.become(waiting)
+  }
 }
